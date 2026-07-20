@@ -1,0 +1,68 @@
+/// Единый формат трека независимо от источника (Spotify/SoundCloud/Yandex).
+/// Именно к этой модели приводятся все ответы адаптеров — плеер и UI
+/// никогда не работают с "сырыми" DTO конкретного сервиса.
+enum MusicSource { spotify, soundcloud, yandex }
+
+/// Как именно проигрывается трек: напрямую (мы контролируем поток)
+/// или через делегированный SDK стороннего сервиса (мы не контролируем поток).
+enum PlaybackMode { directStream, sdkDelegated }
+
+class MoodProfile {
+  final double energy;   // 0..1 — спокойный / энергичный
+  final double valence;  // 0..1 — грустный / позитивный
+  final double intensity; // 0..1 — мягкий / агрессивный
+  final List<String> tags; // например: ['melancholic', 'night-drive']
+
+  const MoodProfile({
+    required this.energy,
+    required this.valence,
+    required this.intensity,
+    this.tags = const [],
+  });
+
+  factory MoodProfile.fromJson(Map<String, dynamic> json) => MoodProfile(
+        energy: (json['energy'] as num).toDouble(),
+        valence: (json['valence'] as num).toDouble(),
+        intensity: (json['intensity'] as num).toDouble(),
+        tags: List<String>.from(json['tags'] ?? const []),
+      );
+}
+
+class UnifiedTrack {
+  final String id;              // внутренний ID Direx (детерминированный хэш)
+  final MusicSource source;
+  final String sourceTrackId;   // оригинальный ID в источнике
+  final String title;
+  final String artist;
+  final Duration duration;
+  final String? artworkUrl;
+  final PlaybackMode playbackMode;
+  final String? streamUrl;      // заполнен только если playbackMode == directStream
+  final MoodProfile? moodProfile; // может подгружаться асинхронно позже
+
+  const UnifiedTrack({
+    required this.id,
+    required this.source,
+    required this.sourceTrackId,
+    required this.title,
+    required this.artist,
+    required this.duration,
+    required this.playbackMode,
+    this.artworkUrl,
+    this.streamUrl,
+    this.moodProfile,
+  });
+
+  UnifiedTrack copyWith({MoodProfile? moodProfile}) => UnifiedTrack(
+        id: id,
+        source: source,
+        sourceTrackId: sourceTrackId,
+        title: title,
+        artist: artist,
+        duration: duration,
+        artworkUrl: artworkUrl,
+        playbackMode: playbackMode,
+        streamUrl: streamUrl,
+        moodProfile: moodProfile ?? this.moodProfile,
+      );
+}

@@ -1,0 +1,165 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../playback/player_controller.dart';
+
+class PlayerScreen extends ConsumerWidget {
+  const PlayerScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final playerState = ref.watch(playerControllerProvider);
+    final controller = ref.read(playerControllerProvider.notifier);
+    final track = playerState.currentTrack;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0E0E12),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (track?.artworkUrl != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Image.network(
+                    track!.artworkUrl!,
+                    width: 280,
+                    height: 280,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _placeholderArt(),
+                  ),
+                )
+              else
+                _placeholderArt(),
+              const SizedBox(height: 32),
+              Text(
+                track?.title ?? 'Ничего не играет',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                track?.artist ?? '',
+                style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              if (track != null) _sourceBadge(track.source.name),
+              const SizedBox(height: 32),
+              _buildProgressBar(playerState, controller),
+              const SizedBox(height: 24),
+              _buildControls(playerState, controller),
+              if (playerState.status == PlayerStatus.error)
+                Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: Text(
+                    playerState.errorMessage ?? 'Ошибка воспроизведения',
+                    style: const TextStyle(color: Colors.redAccent),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _placeholderArt() => Container(
+        width: 280,
+        height: 280,
+        decoration: BoxDecoration(
+          color: const Color(0xFF1C1C22),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Icon(Icons.music_note, color: Colors.white24, size: 64),
+      );
+
+  Widget _sourceBadge(String sourceName) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          sourceName.toUpperCase(),
+          style: const TextStyle(color: Colors.white70, fontSize: 11, letterSpacing: 1),
+        ),
+      );
+
+  Widget _buildProgressBar(PlayerState state, PlayerController controller) {
+    final total = state.currentTrack?.duration ?? Duration.zero;
+    final value = total.inMilliseconds == 0
+        ? 0.0
+        : state.position.inMilliseconds / total.inMilliseconds;
+
+    return Column(
+      children: [
+        SliderTheme(
+          data: SliderTheme.of(navigatorKey.currentContext!).copyWith(
+            trackHeight: 3,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+          ),
+          child: Slider(
+            value: value.clamp(0.0, 1.0),
+            activeColor: Colors.white,
+            inactiveColor: Colors.white24,
+            onChanged: (v) {
+              final newPos = total * v;
+              controller.seek(newPos);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildControls(PlayerState state, PlayerController controller) {
+    final isPlaying = state.status == PlayerStatus.playing;
+    final isLoading = state.status == PlayerStatus.loading;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        IconButton(
+          iconSize: 36,
+          icon: const Icon(Icons.skip_previous, color: Colors.white),
+          onPressed: () {},
+        ),
+        const SizedBox(width: 16),
+        Container(
+          width: 64,
+          height: 64,
+          decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+          child: isLoading
+              ? const Padding(
+                  padding: EdgeInsets.all(18),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                )
+              : IconButton(
+                  icon: Icon(
+                    isPlaying ? Icons.pause : Icons.play_arrow,
+                    color: Colors.black,
+                    size: 32,
+                  ),
+                  onPressed: controller.togglePlayPause,
+                ),
+        ),
+        const SizedBox(width: 16),
+        IconButton(
+          iconSize: 36,
+          icon: const Icon(Icons.skip_next, color: Colors.white),
+          onPressed: controller.playNext,
+        ),
+      ],
+    );
+  }
+}
+
+// Заглушка для доступа к контексту темы вне build-дерева в этом примере
+final navigatorKey = GlobalKey<NavigatorState>();

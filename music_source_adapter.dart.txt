@@ -1,0 +1,35 @@
+import '../../domain/models/unified_track.dart';
+
+/// Контракт, который обязан реализовать каждый источник музыки.
+/// PlayerController и UI работают только через этот интерфейс —
+/// поэтому добавление нового сервиса не требует правок плеера.
+abstract class MusicSourceAdapter {
+  MusicSource get source;
+
+  bool get isAuthenticated;
+
+  /// Открывает системный браузер для OAuth-логина через flutter_web_auth_2.
+  /// Обмен code -> token происходит на backend, а не тут.
+  Future<void> authenticate();
+
+  Future<void> logout();
+
+  Future<List<UnifiedTrack>> searchTracks(String query, {int limit = 20});
+
+  Future<List<UnifiedTrack>> getUserLibrary();
+
+  /// Готовит трек к воспроизведению. Для directStream-источников
+  /// возвращает трек с заполненным streamUrl. Для sdkDelegated
+  /// источников (например Spotify) сама подготовка делегируется
+  /// нативному SDK на уровне PlaybackDelegate, а тут просто
+  /// возвращается трек с playbackMode == sdkDelegated.
+  Future<UnifiedTrack> preparePlayback(UnifiedTrack track);
+}
+
+class AuthRequiredException implements Exception {
+  final MusicSource source;
+  AuthRequiredException(this.source);
+
+  @override
+  String toString() => 'Требуется авторизация в ${source.name}';
+}

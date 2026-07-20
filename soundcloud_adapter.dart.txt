@@ -1,0 +1,135 @@
+import 'package:dio/dio.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
+
+import '../../domain/models/unified_track.dart';
+import 'music_source_adapter.dart';
+
+/// SoundCloud отдаёт прямые (временные, подписанные) stream URL —
+/// поэтому это directStream источник: наш собственный AudioPlayer
+/// может проигрывать его без стороннего SDK.
+class SoundCloudAdapter implements MusicSourceAdapter {
+  final Dio _dio;
+  final FlutterSecureStorage _secureStorage;
+  final String _backendBaseUrl; // наш backend, не SoundCloud напрямую
+
+  static const _redirectUri = 'direx://callback/soundcloud';
+
+  String? _accessToken;
+
+  SoundCloudAdapter({
+    required Dio dio,
+    required FlutterSecureStorage secureStorage,
+    required String backendBaseUrl,
+  })  : _dio = dio,
+        _secureStorage = secureStorage,
+        _backendBaseUrl = backendBaseUrl;
+
+  @override
+  MusicSource get source => MusicSource.soundcloud;
+
+  @override
+  bool get isAuthenticated => _accessToken != null;
+
+  @override
+  Future<void> authenticate() async {
+    final authUrl = Uri.parse('$_backendBaseUrl/auth/soundcloud/start');
+
+    final result = await FlutterWebAuth2.authenticate(
+      url: authUrl.toString(),
+      callbackUrlScheme: 'direx',
+    );
+
+    // Backend уже обменял code -> token и вернул нам короткоживущий
+    // access_token через redirect query параметр (сам refresh_token
+    // остаётся только на backend, на клиент никогда не попадает).
+    final token = Uri.parse(result).queryParameters['access_token'];
+    if (token == null) {
+      throw Exception('SoundCloud auth failed: no token in callback');
+    }
+
+    _accessToken = token;
+    await _secureStorage.write(key: 'soundcloud_access_token', value: token);
+  }
+
+  @override
+  Future<void> logout() async {
+    _accessToken = null;
+    await _secureStorage.delete(key: 'soundcloud_access_token');
+  }
+
+  @override
+  Future<List<UnifiedTrack>> searchTracks(String query, {int limit = 20}) async {
+    _ensureAuthenticated();
+
+    // Запрос идёт через наш backend-прокси, а не напрямую в SoundCloud API —
+    // так client credentials никогда не покидают сервер.
+    final response = await _dio.get(
+      '$_backendBaseUrl/proxy/soundcloud/tracks',
+      queryParameters: {'q': query, 'limit': limit},
+      options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
+    );
+
+    final List<dynamic> items = response.data['collection'];
+    return items.map(_mapToUnifiedTrack).toList();
+  }
+
+  @override
+  Future<List<UnifiedTrack>> getUserLibrary() async {
+    _ensureAuthenticated();
+    final response = await _dio.get(
+      '$_backendBaseUrl/proxy/soundcloud/me/likes/tracks',
+      options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
+    );
+    final List<dynamic> items = response.data['collection'];
+    return items.map(_mapToUnifiedTrack).toList();
+  }
+
+  @override
+  Future<UnifiedTrack> preparePlayback(UnifiedTrack track) async {
+    _ensureAuthenticated();
+
+    // SoundCloud stream URL живёт недолго — получаем его непосредственно
+    // перед стартом воспроизведения, не кэшируем надолго.
+    final response = await _dio.get(
+      '$_backendBaseUrl/proxy/soundcloud/tracks/${track.sourceTrackId}/stream',
+      options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
+    );
+
+    final streamUrl = response.data['stream_url'] as String;
+    return track.copyWith()
+      .let((t) => UnifiedTrack(
+            id: t.id,
+            source: t.source,
+            sourceTrackId: t.sourceTrackId,
+            title: t.title,
+            artist: t.artist,
+            duration: t.duration,
+            artworkUrl: t.artworkUrl,
+            playbackMode: PlaybackMode.directStream,
+            streamUrl: streamUrl,
+            moodProfile: t.moodProfile,
+          ));
+  }
+
+  UnifiedTrack _mapToUnifiedTrack(dynamic json) {
+    return UnifiedTrack(
+      id: 'soundcloud_${json['id']}',
+      source: MusicSource.soundcloud,
+      sourceTrackId: json['id'].toString(),
+      title: json['title'] ?? 'Unknown',
+      artist: json['user']?['username'] ?? 'Unknown artist',
+      duration: Duration(milliseconds: json['duration'] ?? 0),
+      artworkUrl: json['artwork_url'],
+      playbackMode: PlaybackMode.directStream,
+    );
+  }
+
+  void _ensureAuthenticated() {
+    if (!isAuthenticated) throw AuthRequiredException(source);
+  }
+}
+
+extension _Let<T> on T {
+  R let<R>(R Function(T) block) => block(this);
+}

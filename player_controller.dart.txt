@@ -1,0 +1,150 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:just_audio/just_audio.dart';
+
+import '../data/adapters/music_source_adapter.dart';
+import '../domain/models/unified_track.dart';
+
+enum PlayerStatus { idle, loading, playing, paused, error }
+
+class PlayerState {
+  final UnifiedTrack? currentTrack;
+  final List<UnifiedTrack> queue;
+  final int queueIndex;
+  final PlayerStatus status;
+  final Duration position;
+  final String? errorMessage;
+
+  const PlayerState({
+    this.currentTrack,
+    this.queue = const [],
+    this.queueIndex = 0,
+    this.status = PlayerStatus.idle,
+    this.position = Duration.zero,
+    this.errorMessage,
+  });
+
+  PlayerState copyWith({
+    UnifiedTrack? currentTrack,
+    List<UnifiedTrack>? queue,
+    int? queueIndex,
+    PlayerStatus? status,
+    Duration? position,
+    String? errorMessage,
+  }) {
+    return PlayerState(
+      currentTrack: currentTrack ?? this.currentTrack,
+      queue: queue ?? this.queue,
+      queueIndex: queueIndex ?? this.queueIndex,
+      status: status ?? this.status,
+      position: position ?? this.position,
+      errorMessage: errorMessage,
+    );
+  }
+}
+
+/// Единая точка входа для воспроизведения. UI дёргает только этот
+/// класс и никогда не знает, что за источник сейчас играет.
+///
+/// Важно: для directStream-источников (SoundCloud, Yandex) мы сами
+/// управляем AudioPlayer через just_audio. Для sdkDelegated
+/// источников (Spotify) реальное воспроизведение идёт через
+/// нативный Spotify SDK — здесь это скрыто за тем же интерфейсом,
+/// но физически это разные плеерные движки под капотом.
+class PlayerController extends StateNotifier<PlayerState> {
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  final Map<MusicSource, MusicSourceAdapter> _adapters;
+
+  PlayerController(this._adapters) : super(const PlayerState()) {
+    _audioPlayer.positionStream.listen((pos) {
+      state = state.copyWith(position: pos);
+    });
+  }
+
+  Future<void> playTrack(UnifiedTrack track, {List<UnifiedTrack>? queue}) async {
+    state = state.copyWith(status: PlayerStatus.loading);
+
+    try {
+      final adapter = _adapters[track.source];
+      if (adapter == null) {
+        throw Exception('Нет адаптера для источника ${track.source}');
+      }
+      if (!adapter.isAuthenticated) {
+        throw AuthRequiredException(track.source);
+      }
+
+      final preparedTrack = await adapter.preparePlayback(track);
+
+      if (preparedTrack.playbackMode == PlaybackMode.directStream) {
+        await _playDirectStream(preparedTrack);
+      } else {
+        await _delegateToSdk(preparedTrack);
+      }
+
+      state = state.copyWith(
+        currentTrack: preparedTrack,
+        queue: queue ?? state.queue,
+        status: PlayerStatus.playing,
+      );
+    } catch (e) {
+      state = state.copyWith(
+        status: PlayerStatus.error,
+        errorMessage: e.toString(),
+      );
+    }
+  }
+
+  Future<void> _playDirectStream(UnifiedTrack track) async {
+    if (track.streamUrl == null) {
+      throw Exception('Отсутствует streamUrl для directStream трека');
+    }
+    await _audioPlayer.setUrl(track.streamUrl!);
+    await _audioPlayer.play();
+  }
+
+  Future<void> _delegateToSdk(UnifiedTrack track) async {
+    // Здесь вызывается нативный мост к Spotify SDK
+    // (platform channel / spotify_sdk pub-пакет).
+    // Для MVP это может быть заглушка, показывающая embed-плеер.
+    throw UnimplementedError(
+      'Spotify SDK playback delegate ещё не подключён',
+    );
+  }
+
+  Future<void> togglePlayPause() async {
+    if (state.status == PlayerStatus.playing) {
+      await _audioPlayer.pause();
+      state = state.copyWith(status: PlayerStatus.paused);
+    } else if (state.status == PlayerStatus.paused) {
+      await _audioPlayer.play();
+      state = state.copyWith(status: PlayerStatus.playing);
+    }
+  }
+
+  Future<void> seek(Duration position) => _audioPlayer.seek(position);
+
+  Future<void> playNext() async {
+    if (state.queueIndex + 1 < state.queue.length) {
+      final nextIndex = state.queueIndex + 1;
+      await playTrack(state.queue[nextIndex], queue: state.queue);
+      state = state.copyWith(queueIndex: nextIndex);
+    }
+  }
+
+  @override
+  void dispose() {
+    _audioPlayer.dispose();
+    super.dispose();
+  }
+}
+
+final playerControllerProvider =
+    StateNotifierProvider<PlayerController, PlayerState>((ref) {
+  final adapters = ref.watch(musicAdaptersProvider);
+  return PlayerController(adapters);
+});
+
+// Определяется в providers/riverpod_providers.dart — здесь только сигнатура
+final musicAdaptersProvider =
+    Provider<Map<MusicSource, MusicSourceAdapter>>((ref) {
+  throw UnimplementedError('Override in ProviderScope at app root');
+});
